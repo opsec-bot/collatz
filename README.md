@@ -21,6 +21,9 @@ This project checks the conjecture quickly and provably, and makes the data easy
   delay records (837799 takes 524 steps).
 - **Handles numbers of any size** with its own arbitrary-precision integer, so `2^1000+1` works.
 - **Finds every cycle** of `3n+1` and its relatives like `5n+1`, by brute force and by solving the cycle equation.
+- **Measures something we couldn't find in the literature:** how often 3n−1 (3n+1 on the negative
+  integers) ends in each of its three cycles. The answer appears to be 32.68% / 32.51% / 34.81%,
+  stable from 2^20 up to 2^1000. [More below](#new-where-3n1-orbits-end).
 - **Zero dependencies.** Threads, argument parsing, bignums, charts and SVG output are all written
   with the standard library only.
 
@@ -131,6 +134,33 @@ $ collatz cycles --a 5 --b 1 --positive --range 200
 patterns up to length 24 and proves that the only integer cycles that short are 1 → 2 and the three
 negative ones.
 
+### New: where 3n−1 orbits end
+
+Run on the negative integers, 3n+1 becomes 3n−1, which has three cycles instead of one: through 1,
+5 and 17. In 2020, commenters on Terence Tao's blog wondered whether the 17-cycle "acts as a net"
+that catches more numbers than the others. We couldn't find anyone who had measured it, so this
+project did:
+
+```text
+$ collatz verify 2^40 --minus
+  ✓ every n < 1,099,511,627,776 reaches one of the cycles through 1, 5 and 17
+
+$ collatz basins 2^36 --table 2^32
+```
+
+| ends in | all n < 2^36 (exact) | random 1000-bit n (10⁷ samples) |
+|---|---:|---:|
+| 1 | 32.680% | 32.68 ± 0.03% |
+| 5 → 7 → 10 | 32.508% | 32.50 ± 0.03% |
+| 17 → 25 → … → 34 | **34.812%** | **34.82 ± 0.03%** |
+
+<p align="center"><img src="docs/img/basins.svg" alt="Share of starting values in each dyadic range that end in each 3n-1 cycle; after early fluctuations the lines settle near 32.7%, 32.5% and 34.8%" width="760"></p>
+
+The 17-cycle really does catch the most, and the shares agree to ±0.03% from 2^40 up to 1000-bit
+numbers. That strongly suggests (but does not prove) that the three basins have natural densities.
+The full write-up, with methods, caveats and open questions, is in
+[`docs/3n-minus-1-basins.md`](docs/3n-minus-1-basins.md).
+
 ### Plot
 
 `collatz plot orbits`, `collatz plot stopping` and `collatz plot records` write the SVG charts in
@@ -220,6 +250,7 @@ cargo test --release -- --include-ignored   # also every path record below 2^32
 | [`verify`](src/verify.rs) | the parallel range verifier |
 | [`records`](src/records.rs) | path records and delay records |
 | [`cycles`](src/cycles.rs) | cycle detection for `an+b` maps and the cycle equation |
+| [`basins`](src/basins.rs) | which 3n−1 cycle each number ends in: exact tables and sampling |
 | [`plot`](src/plot.rs) | SVG charts |
 | [`expr`](src/expr.rs) | the `2^40`-style number parser |
 | [`cli`](src/cli) | the command-line tool |
