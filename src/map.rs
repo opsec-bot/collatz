@@ -66,6 +66,42 @@ pub fn syracuse(n: u128) -> Option<u128> {
     Some(t >> v2(t))
 }
 
+/// The sign of the odd step: the Collatz map `3n+1`, or its mirror `3n-1`.
+///
+/// `3n-1` on the positive integers is `3n+1` on the negative integers seen
+/// through `n -> -n`. It has three known cycles instead of one, so it is the
+/// standard near miss any argument about `3n+1` must survive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum Variant {
+    /// `n/2` for even `n`, `3n+1` for odd `n`.
+    #[default]
+    Plus,
+    /// `n/2` for even `n`, `3n-1` for odd `n`.
+    Minus,
+}
+
+impl Variant {
+    /// The shortcut map: `n/2` for even `n`, `(3n±1)/2` for odd `n`.
+    #[inline]
+    pub fn shortcut(self, n: u128) -> Option<u128> {
+        match self {
+            Variant::Plus => shortcut(n),
+            // (3n - 1)/2 == n + (n - 1)/2 == n + n/2 for odd n.
+            Variant::Minus if n % 2 == 1 => n.checked_add(n / 2),
+            Variant::Minus => Some(n / 2),
+        }
+    }
+}
+
+impl std::fmt::Display for Variant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Variant::Plus => "3n+1",
+            Variant::Minus => "3n-1",
+        })
+    }
+}
+
 /// Which form of the map to iterate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Map {
@@ -166,6 +202,22 @@ mod tests {
         assert_eq!(Map::Syracuse.apply(48), Some(3));
         assert_eq!("t".parse::<Map>(), Ok(Map::Shortcut));
         assert!("x".parse::<Map>().is_err());
+    }
+
+    #[test]
+    fn minus_variant() {
+        assert_eq!(Variant::Minus.shortcut(5), Some(7));
+        assert_eq!(Variant::Minus.shortcut(7), Some(10));
+        assert_eq!(Variant::Minus.shortcut(10), Some(5));
+        assert_eq!(Variant::Minus.shortcut(1), Some(1));
+        assert_eq!(Variant::Plus.shortcut(5), Some(8));
+        assert_eq!(Variant::Minus.to_string(), "3n-1");
+        // 3n-1 on m is 3n+1 on -m.
+        for m in 1..1000i128 {
+            let plus_on_negative = if m % 2 == 0 { -m / 2 } else { (-3 * m + 1) / 2 };
+            let minus = Variant::Minus.shortcut(m as u128).unwrap() as i128;
+            assert_eq!(plus_on_negative, -minus);
+        }
     }
 
     #[test]

@@ -16,9 +16,12 @@
 //! Peaks are measured under the standard map, which matches the published
 //! path-record tables: the peak of 27 is 9232, the value of `3n+1` reached
 //! from 3077.
+//!
+//! Both engines also run the mirror map `3n-1` ([`Variant::Minus`]), where a
+//! run of `a` odd steps uses `n - 1 = 2^a * m` and ends at `3^a * m + 1`.
 
 use crate::bigint::BigUint;
-use crate::map::{Map, POW3};
+use crate::map::{Map, Variant, POW3};
 
 /// Why a run stopped before reaching its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,9 +88,31 @@ impl From<Run> for BigRun {
 ///
 /// Panics if `target < 2`: the orbit 1, 2, 1, ... never drops below 1.
 pub fn run_until_below(start: u128, target: u128, max_steps: u64) -> Result<Run, RunError> {
+    run_fast::<false>(start, target, max_steps)
+}
+
+/// [`run_until_below`] for either sign of the map.
+///
+/// Under `3n-1` the cycle minima 1, 5 and 17 never drop below themselves, so
+/// starting there with `target == start` only ends at the step limit.
+pub fn run_variant_until_below(
+    variant: Variant,
+    start: u128,
+    target: u128,
+    max_steps: u64,
+) -> Result<Run, RunError> {
+    match variant {
+        Variant::Plus => run_fast::<false>(start, target, max_steps),
+        Variant::Minus => run_fast::<true>(start, target, max_steps),
+    }
+}
+
+/// The run-skipping engine, specialized at compile time for `3n-1` when `MINUS`.
+#[inline(always)]
+fn run_fast<const MINUS: bool>(start: u128, target: u128, max_steps: u64) -> Result<Run, RunError> {
     assert!(
         target >= 2,
-        "every orbit ends in 1, 2, 1, ...; target must be at least 2"
+        "every orbit ends in a cycle through 1; target must be at least 2"
     );
     let target_bits = 128 - target.leading_zeros();
     let mut x = start;
@@ -101,13 +126,23 @@ pub fn run_until_below(start: u128, target: u128, max_steps: u64) -> Result<Run,
         }
         if x & 1 == 1 {
             // n + 1 = 2^a * m  ==>  T^a(n) = 3^a * m - 1, an even number.
-            let x1 = x.checked_add(1).ok_or(RunError::Overflow)?;
-            let a = x1.trailing_zeros();
+            // For 3n-1 (here x >= 3): n - 1 = 2^a * m  ==>  T^a(n) = 3^a * m + 1.
+            let shifted = if MINUS {
+                x - 1
+            } else {
+                x.checked_add(1).ok_or(RunError::Overflow)?
+            };
+            let a = shifted.trailing_zeros();
             let pow = *POW3.get(a as usize).ok_or(RunError::Overflow)?;
-            x = pow.checked_mul(x1 >> a).ok_or(RunError::Overflow)? - 1;
+            let tripled = pow.checked_mul(shifted >> a).ok_or(RunError::Overflow)?;
+            x = if MINUS {
+                tripled.checked_add(1).ok_or(RunError::Overflow)?
+            } else {
+                tripled - 1
+            };
             steps += u64::from(a);
             odd_steps += u64::from(a);
-            // The last odd step went through 3y + 1 = 2x under the standard map.
+            // The last odd step went through 3y ± 1 = 2x under the standard map.
             peak = peak.max(x.checked_mul(2).ok_or(RunError::Overflow)?);
         } else {
             let zeros = x.trailing_zeros();
@@ -146,6 +181,16 @@ pub fn run_until_below_big(
     target: &BigUint,
     max_steps: u64,
 ) -> Result<BigRun, RunError> {
+    run_variant_until_below_big(Variant::Plus, start, target, max_steps)
+}
+
+/// [`run_until_below_big`] for either sign of the map.
+pub fn run_variant_until_below_big(
+    variant: Variant,
+    start: &BigUint,
+    target: &BigUint,
+    max_steps: u64,
+) -> Result<BigRun, RunError> {
     assert!(target.bits() >= 2, "target must be at least 2");
     let mut x = start.clone();
     let mut steps = 0u64;
@@ -157,7 +202,13 @@ pub fn run_until_below_big(
             return Err(RunError::StepLimit);
         }
         if !x.is_even() {
-            x.mul_add_small(3, 1);
+            match variant {
+                Variant::Plus => x.mul_add_small(3, 1),
+                Variant::Minus => {
+                    x.mul_add_small(3, 0);
+                    x.sub_small(1);
+                }
+            }
             if x > peak {
                 peak.clone_from(&x);
             }
@@ -177,9 +228,21 @@ pub fn run_until_below_big(
 
 /// Runs with the fast engine and falls back to the exact one on overflow.
 pub fn run_with_fallback(start: u128, target: u128, max_steps: u64) -> Result<BigRun, RunError> {
-    match run_until_below(start, target, max_steps) {
+    run_variant_with_fallback(Variant::Plus, start, target, max_steps)
+}
+
+/// [`run_with_fallback`] for either sign of the map.
+pub fn run_variant_with_fallback(
+    variant: Variant,
+    start: u128,
+    target: u128,
+    max_steps: u64,
+) -> Result<BigRun, RunError> {
+    match run_variant_until_below(variant, start, target, max_steps) {
         Ok(run) => Ok(run.into()),
-        Err(RunError::Overflow) => run_until_below_big(&start.into(), &target.into(), max_steps),
+        Err(RunError::Overflow) => {
+            run_variant_until_below_big(variant, &start.into(), &target.into(), max_steps)
+        }
         Err(err) => Err(err),
     }
 }
@@ -398,6 +461,55 @@ mod tests {
                 naive(n, 2),
                 "n = {n}"
             );
+        }
+    }
+
+    /// Naive 3n-1 loop: (T steps, odd steps, peak, end).
+    fn naive_minus(start: u128, target: u128) -> (u64, u64, u128, u128) {
+        let (mut x, mut steps, mut odd, mut peak) = (start, 0, 0, start);
+        while x >= target {
+            if x % 2 == 1 {
+                x = 3 * x - 1;
+                peak = peak.max(x);
+                odd += 1;
+            }
+            x /= 2;
+            steps += 1;
+        }
+        (steps, odd, peak, x)
+    }
+
+    #[test]
+    fn minus_engine_matches_naive_loop() {
+        for n in 2..20_000u128 {
+            // The cycle minima 5 and 17 never drop below themselves.
+            if n != 5 && n != 17 {
+                let fast = run_variant_until_below(Variant::Minus, n, n, u64::MAX).unwrap();
+                let got = (fast.steps, fast.odd_steps, fast.peak, fast.end);
+                assert_eq!(got, naive_minus(n, n), "n = {n}");
+            }
+            let fast = run_variant_until_below(Variant::Minus, n, 18, u64::MAX).unwrap();
+            let got = (fast.steps, fast.odd_steps, fast.peak, fast.end);
+            assert_eq!(got, naive_minus(n, 18), "n = {n}");
+        }
+        assert_eq!(
+            run_variant_until_below(Variant::Minus, 5, 5, 1000),
+            Err(RunError::StepLimit)
+        );
+    }
+
+    #[test]
+    fn minus_engines_agree_beyond_u128() {
+        for start in [(1u128 << 127) + 1, u128::MAX, 3 << 100] {
+            let fast = run_variant_with_fallback(Variant::Minus, start, 1 << 20, u64::MAX).unwrap();
+            let slow = run_variant_until_below_big(
+                Variant::Minus,
+                &start.into(),
+                &(1u128 << 20).into(),
+                u64::MAX,
+            )
+            .unwrap();
+            assert_eq!(fast, slow);
         }
     }
 

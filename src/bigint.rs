@@ -107,6 +107,25 @@ impl BigUint {
         self.normalize();
     }
 
+    /// `self -= sub`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result would be negative.
+    pub fn sub_small(&mut self, sub: u64) {
+        let mut borrow = sub;
+        for limb in &mut self.limbs {
+            if borrow == 0 {
+                break;
+            }
+            let (d, b) = limb.overflowing_sub(borrow);
+            *limb = d;
+            borrow = u64::from(b);
+        }
+        assert!(borrow == 0, "BigUint subtraction underflow");
+        self.normalize();
+    }
+
     /// Quotient and remainder of division by a nonzero `u64`.
     ///
     /// # Panics
@@ -390,6 +409,23 @@ mod tests {
         let mut n = BigUint::from(u128::MAX);
         n.mul_add_small(3, 1);
         assert_eq!(n.to_string(), "1020847100762815390390123822295304634366");
+    }
+
+    #[test]
+    fn small_subtraction_borrows() {
+        let mut n = BigUint::power_of_two(130);
+        n.sub_small(1);
+        assert_eq!(n.bits(), 130);
+        assert_eq!(n.trailing_zeros(), Some(0));
+        let mut m = BigUint::from(5u64);
+        m.sub_small(5);
+        assert!(m.is_zero());
+    }
+
+    #[test]
+    #[should_panic]
+    fn small_subtraction_underflow() {
+        BigUint::from(3u64).sub_small(4);
     }
 
     #[test]
