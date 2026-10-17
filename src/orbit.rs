@@ -227,9 +227,10 @@ impl Summary {
         self.shortcut_steps + self.odd_steps
     }
 
-    /// Even steps on the way to 1.
+    /// Halvings on the way to 1: the even steps of the standard map. Every
+    /// shortcut step, odd or even, contains exactly one halving.
     pub fn even_steps(&self) -> u64 {
-        self.shortcut_steps - self.odd_steps
+        self.shortcut_steps
     }
 }
 
@@ -439,6 +440,17 @@ mod tests {
         let by_hand = trajectory(&n, Map::Standard).count() as u64 - 1;
         assert_eq!(s.standard_steps(), by_hand);
         assert_eq!(s.stopping_time, Some(2));
+        assert_eq!(s.even_steps() + s.odd_steps, s.standard_steps());
+    }
+
+    #[test]
+    fn step_counts_of_27() {
+        let s = summarize(&27u64.into());
+        assert_eq!(
+            (s.standard_steps(), s.odd_steps, s.even_steps()),
+            (111, 41, 70)
+        );
+        assert_eq!(s.shortcut_steps, 70);
     }
 
     #[test]
