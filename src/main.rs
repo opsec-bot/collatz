@@ -41,6 +41,13 @@ COMMANDS
 
   patterns [L]       Find every integer cycle of length <= L via the cycle equation [20]
 
+  basins [limit]     Which of its three cycles 3n-1 ends in, exactly and by sampling [2^28]
+      --table <t>      size of the exact lookup table               [min(limit, 2^30)]
+      --bits <list>    bit sizes to sample                      [64,100,200,500,1000]
+      --samples <s>    random starts per size                     [200000]
+      --seed <s>       sampling seed                              [1]
+      -o, --output     also write a chart of the exact shares
+
   bench [limit]      Compare the naive loop with each optimization  [2^26]
 
   plot <chart>       Draw an SVG chart (to stdout, or a file with -o)
@@ -69,6 +76,7 @@ fn main() {
         "patterns" => commands::patterns(rest),
         "bench" => commands::bench(rest),
         "plot" => commands::plot(rest),
+        "basins" => commands::basins(rest),
         "help" | "--help" | "-h" => {
             out!("{}", USAGE.trim_end());
             Ok(())

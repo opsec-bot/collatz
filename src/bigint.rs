@@ -39,6 +39,13 @@ impl BigUint {
         Self { limbs }
     }
 
+    /// Builds a value from little-endian 64-bit limbs.
+    pub fn from_le_limbs(limbs: Vec<u64>) -> Self {
+        let mut n = BigUint { limbs };
+        n.normalize();
+        n
+    }
+
     pub fn is_zero(&self) -> bool {
         self.limbs.is_empty()
     }

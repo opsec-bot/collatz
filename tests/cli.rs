@@ -93,6 +93,16 @@ fn cycles_and_patterns() {
 }
 
 #[test]
+fn minus_verification_and_basins() {
+    let out = stdout(&["verify", "1e6", "--minus", "-k", "16"]);
+    assert!(out.contains("reaches one of the cycles through 1, 5 and 17"));
+    let out = stdout(&["basins", "2^16", "--bits", "80", "--samples", "4000"]);
+    // Exact shares below 2^16, from the table.
+    assert!(out.contains("33.074% / 32.319% / 34.607%"));
+    assert!(out.contains("n ≈ 2^80"));
+}
+
+#[test]
 fn sieve_table() {
     let out = stdout(&["sieve", "--depth", "10"]);
     assert!(out.contains("1,024") && out.contains("64"));

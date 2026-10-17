@@ -666,6 +666,8 @@ pub fn plot(argv: &[String]) -> CliResult {
                     y_label: "value".into(),
                     x_scale: Scale::Linear,
                     y_scale: Scale::Log2,
+                    x_range: None,
+                    y_range: None,
                 },
                 &series,
             )
@@ -698,6 +700,8 @@ pub fn plot(argv: &[String]) -> CliResult {
                     y_label: "steps".into(),
                     x_scale: Scale::Linear,
                     y_scale: Scale::Linear,
+                    x_range: None,
+                    y_range: None,
                 },
                 &points,
                 None,
@@ -731,6 +735,8 @@ pub fn plot(argv: &[String]) -> CliResult {
                     y_label: "peak of the orbit".into(),
                     x_scale: Scale::Log2,
                     y_scale: Scale::Log2,
+                    x_range: None,
+                    y_range: None,
                 },
                 &points,
                 Some((2.0, "peak = n²")),
@@ -753,6 +759,194 @@ pub fn plot(argv: &[String]) -> CliResult {
             eprintln!("  wrote {path}");
         }
         None => out!("{}", svg.trim_end()),
+    }
+    Ok(())
+}
+
+pub fn basins(argv: &[String]) -> CliResult {
+    use collatz::basins::{count, sample, Basin, BasinTable, Tally};
+
+    let args = Args::parse(
+        argv,
+        &Spec {
+            values: &["threads", "table", "bits", "samples", "seed", "output"],
+            switches: &[],
+        },
+    )?;
+    args.no_extra_positional(1)?;
+    let max = match args.positional().first() {
+        Some(s) => expr::parse_u128(s)?,
+        None => 1 << 28,
+    };
+    if max < 4 {
+        return Err(CliError::Usage("the limit must be at least 4".into()));
+    }
+    let threads = args.get("threads", default_threads())?;
+    let table_len = match args.value("table") {
+        Some(s) => expr::parse_u128(s)?,
+        None => max.min(1 << 30),
+    };
+    let table_len = usize::try_from(table_len)
+        .ok()
+        .filter(|&t| (2..=1 << 33).contains(&t))
+        .ok_or_else(|| CliError::Usage("--table must be between 2 and 2^33".into()))?;
+    let samples = match args.value("samples") {
+        Some(s) => {
+            u64::try_from(expr::parse_u128(s)?).map_err(|_| "--samples is too large".to_string())?
+        }
+        None => 200_000,
+    };
+    let seed = args.get("seed", 1u64)?;
+    let bits: Vec<u32> = args
+        .value("bits")
+        .unwrap_or("64,100,200,500,1000")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.trim()
+                .parse()
+                .map_err(|_| format!("invalid bit size '{s}'"))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let failure = |e: collatz::basins::Unresolved| CliError::Failure(e.to_string());
+    let started = Instant::now();
+    out!();
+    out!("  Where 3n-1 orbits end: the cycles through 1, 5 and 17");
+    out!("  (equivalently 3n+1 on the negative integers: the cycles through -1, -5 and -17)");
+    out!();
+    let lookup = BasinTable::build(table_len, threads).map_err(failure)?;
+
+    let percent = |tally: &Tally, b: Basin| format!("{:.3}%", 100.0 * tally.fraction(b));
+    let mut rows = Vec::new();
+    let mut levels: Vec<(u32, Tally)> = Vec::new();
+    let mut cumulative = Tally::default();
+    let top = 128 - (max - 1).leading_zeros();
+    let progress = progress_bar("counting");
+    for k in 1..=top {
+        let lo = 1u128 << (k - 1);
+        let hi = (1u128 << k).min(max);
+        let level = count(&lookup, lo, hi, threads).map_err(failure)?;
+        for i in 0..3 {
+            cumulative.0[i] += level.0[i];
+        }
+        levels.push((k, level));
+        progress(k as usize, top as usize);
+        if k >= 8 {
+            rows.push(vec![
+                format!(
+                    "[2^{}, {})",
+                    k - 1,
+                    if hi == 1 << k {
+                        format!("2^{k}")
+                    } else {
+                        group(hi)
+                    }
+                ),
+                percent(&level, Basin::One),
+                percent(&level, Basin::Five),
+                percent(&level, Basin::Seventeen),
+                format!(
+                    "{} / {} / {}",
+                    percent(&cumulative, Basin::One),
+                    percent(&cumulative, Basin::Five),
+                    percent(&cumulative, Basin::Seventeen)
+                ),
+            ]);
+        }
+    }
+    out!("  Exact, for every n < {}:", limit(max));
+    out!();
+    out!(
+        "{}",
+        table(
+            &[
+                ("range", Align::Left),
+                ("→ 1", Align::Right),
+                ("→ 5", Align::Right),
+                ("→ 17", Align::Right),
+                ("all n below the range end", Align::Right),
+            ],
+            &rows
+        )
+    );
+
+    if !bits.is_empty() && samples > 0 {
+        out!();
+        out!(
+            "  Random samples ({} per size, seed {seed}, 95% intervals):",
+            group(samples)
+        );
+        out!();
+        let mut rows = Vec::new();
+        for &b in &bits {
+            let tally = sample(&lookup, b, samples, seed, threads).map_err(failure)?;
+            let cell = |basin| {
+                format!(
+                    "{:.2} ± {:.2}%",
+                    100.0 * tally.fraction(basin),
+                    100.0 * tally.margin(basin)
+                )
+            };
+            rows.push(vec![
+                format!("n ≈ 2^{b}"),
+                cell(Basin::One),
+                cell(Basin::Five),
+                cell(Basin::Seventeen),
+            ]);
+        }
+        out!(
+            "{}",
+            table(
+                &[
+                    ("size", Align::Left),
+                    ("→ 1", Align::Right),
+                    ("→ 5", Align::Right),
+                    ("→ 17", Align::Right),
+                ],
+                &rows
+            )
+        );
+    }
+    out!();
+    out!("  Done in {}.", duration(started.elapsed()));
+    out!();
+
+    if let Some(path) = args.value("output") {
+        let shown: Vec<&(u32, Tally)> = levels.iter().filter(|(k, _)| *k >= 10).collect();
+        let series: Vec<Series> = Basin::ALL
+            .iter()
+            .map(|&b| {
+                let points: Vec<(f64, f64)> = shown
+                    .iter()
+                    .map(|(k, t)| (f64::from(*k), 100.0 * t.fraction(b)))
+                    .collect();
+                let last = *points.last().unwrap_or(&(0.0, 0.0));
+                Series {
+                    label: format!("ends in the {} cycle", b.minimum()),
+                    callout: Some((last.0, last.1, format!("{:.2}%", last.1))),
+                    points,
+                }
+            })
+            .collect();
+        let values = series.iter().flat_map(|s| s.points.iter().map(|p| p.1));
+        let (lo, hi) = values.fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let first = shown.first().map_or(0.0, |(k, _)| f64::from(*k));
+        let svg = line_chart(
+            "Which cycle 3n-1 orbits end in",
+            "Share of the starting values in each range [2^(k-1), 2^k), counted exactly",
+            &Axes {
+                x_label: "range of starting values".into(),
+                y_label: "share of starting values".into(),
+                x_scale: Scale::Log2,
+                y_scale: Scale::Percent,
+                x_range: Some((first, f64::from(top) + 0.5)),
+                y_range: Some(((lo - 0.5).floor(), (hi + 0.5).ceil())),
+            },
+            &series,
+        );
+        std::fs::write(path, svg).map_err(|e| CliError::Failure(format!("{path}: {e}")))?;
+        eprintln!("  wrote {path}");
     }
     Ok(())
 }

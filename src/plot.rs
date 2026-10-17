@@ -42,6 +42,8 @@ pub enum Scale {
     Linear,
     /// Values are base-2 exponents, labeled `2^k`.
     Log2,
+    /// Values are percentages, labeled `34%`.
+    Percent,
 }
 
 /// Axis titles and scales.
@@ -51,6 +53,10 @@ pub struct Axes {
     pub y_label: String,
     pub x_scale: Scale,
     pub y_scale: Scale,
+    /// Fixed x range; by default the axis starts at zero and fits the data.
+    pub x_range: Option<(f64, f64)>,
+    /// Fixed y range; by default the axis starts at zero and fits the data.
+    pub y_range: Option<(f64, f64)>,
 }
 
 /// Picks about `target` round tick values covering `[min, max]`.
@@ -78,6 +84,7 @@ fn tick_label(value: f64, scale: Scale) -> String {
     match scale {
         Scale::Log2 => format!("2^{}", value.round() as i64),
         Scale::Linear => compact(value),
+        Scale::Percent => format!("{}%", compact(value)),
     }
 }
 
@@ -109,7 +116,7 @@ struct Frame {
 }
 
 impl Frame {
-    fn fit(points: impl Iterator<Item = (f64, f64)>) -> Frame {
+    fn fit(points: impl Iterator<Item = (f64, f64)>, axes: &Axes) -> Frame {
         let mut frame = Frame {
             x_min: f64::MAX,
             x_max: f64::MIN,
@@ -130,6 +137,12 @@ impl Frame {
         frame.y_min = frame.y_min.min(0.0);
         frame.y_max += (frame.y_max - frame.y_min).max(1.0) * 0.06;
         frame.x_max = frame.x_max.max(frame.x_min + 1.0);
+        if let Some((lo, hi)) = axes.x_range {
+            (frame.x_min, frame.x_max) = (lo, hi);
+        }
+        if let Some((lo, hi)) = axes.y_range {
+            (frame.y_min, frame.y_max) = (lo, hi);
+        }
         frame
     }
 
@@ -241,7 +254,7 @@ fn callout(svg: &mut String, frame: &Frame, class: &str, (x, y, text): (f64, f64
 /// A line chart of up to [`MAX_SERIES`] series, with a legend and callouts.
 pub fn line_chart(title: &str, subtitle: &str, axes: &Axes, series: &[Series]) -> String {
     let series = &series[..series.len().min(MAX_SERIES)];
-    let frame = Frame::fit(series.iter().flat_map(|s| s.points.iter().copied()));
+    let frame = Frame::fit(series.iter().flat_map(|s| s.points.iter().copied()), axes);
     let mut svg = String::new();
     open(&mut svg, title, subtitle, axes, &frame, series.len());
 
@@ -295,7 +308,7 @@ pub fn scatter_chart(
     reference: Option<(f64, &str)>,
     callouts: &[(f64, f64, String)],
 ) -> String {
-    let frame = Frame::fit(points.iter().copied());
+    let frame = Frame::fit(points.iter().copied(), axes);
     let mut svg = String::new();
     open(&mut svg, title, subtitle, axes, &frame, 1);
 
@@ -349,6 +362,8 @@ mod tests {
             y_label: "value".into(),
             x_scale: Scale::Linear,
             y_scale: Scale::Log2,
+            x_range: None,
+            y_range: None,
         }
     }
 
@@ -363,6 +378,7 @@ mod tests {
         assert_eq!(compact(1_500_000.0), "1.5M");
         assert_eq!(compact(12.0), "12");
         assert_eq!(tick_label(10.0, Scale::Log2), "2^10");
+        assert_eq!(tick_label(34.5, Scale::Percent), "34.5%");
     }
 
     #[test]
