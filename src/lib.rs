@@ -13,4 +13,7 @@
 //! from any positive integer eventually reaches 1. It is unproven; this crate
 //! is about checking it quickly and correctly, and about looking at the data.
 
+pub mod bigint;
 pub mod map;
+
+pub use bigint::BigUint;
