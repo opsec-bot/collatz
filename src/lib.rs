@@ -15,6 +15,7 @@
 
 pub mod bigint;
 pub mod cycles;
+pub mod expr;
 pub mod map;
 pub mod orbit;
 pub mod par;
