@@ -5,9 +5,14 @@
 //! value is already known to reach 1. On top of that, most `n` never need to
 //! be run at all (see [`crate::sieve`]):
 //!
-//! 1. `[2, 2^k)` is checked directly, number by number.
-//! 2. `[2^k, limit)` is split into blocks of `2^k`. In each block only the
-//!    residues surviving the descent sieve are run, minus `n ≡ 2, 4, 5, 8 (mod 9)`.
+//! 1. `[2, 2^16)` is checked directly, number by number.
+//! 2. `[2^16, 2^k)` is split into blocks of `2^16`, and only residues that
+//!    survive a `2^16` descent sieve are run, minus `n ≡ 2, 4, 5, 8 (mod 9)`.
+//! 3. `[2^k, limit)` is split into blocks of `2^k` and sieved the same way
+//!    with the full `2^k` sieve.
+//!
+//! A depth-`d` sieve is only valid for `n >= 2^d`, which is why each sieve
+//! takes over where it does.
 //!
 //! Each block is one unit of work, handed out to threads through an atomic
 //! counter. Every unit produces a small summary that is folded into a
@@ -20,8 +25,12 @@ use std::time::{Duration, Instant};
 use crate::orbit::{run_until_below, run_until_below_big, RunError};
 use crate::sieve::{DescentSieve, MOD9_SKIP};
 
-/// Numbers per unit in the directly checked region below `2^k`.
+/// Numbers per unit in the directly checked region.
 const DIRECT_CHUNK: u128 = 1 << 16;
+
+/// Depth of the smaller sieve that covers `[2^16, 2^k)`, where the main
+/// `2^k` sieve does not apply yet.
+const INNER_SIEVE_K: u32 = 16;
 
 /// Settings for a verification run.
 #[derive(Debug, Clone)]
@@ -131,61 +140,127 @@ fn descent_steps(n: u128, max_steps: u64) -> Result<u64, VerifyError> {
     }
 }
 
-/// How the range is cut into units.
-struct Layout<'a> {
+/// One sieved stretch of the range, cut into blocks of `2^k`.
+struct Level {
+    modulus: u128,
+    survivors: Vec<u64>,
+    survivors_mod9: Vec<u8>,
+    /// The first block starts at `first_block * modulus`.
+    first_block: u128,
+    units: usize,
+}
+
+/// How the range is cut into units: a directly checked start, then one level
+/// per sieve depth, each starting where its proof becomes valid.
+struct Layout {
     limit: u128,
     max_steps: u64,
-    modulus: u128,
-    survivors: &'a [u64],
-    survivors_mod9: Vec<u8>,
     direct_end: u128,
     direct_units: usize,
+    levels: Vec<Level>,
     total_units: usize,
 }
 
-impl<'a> Layout<'a> {
-    fn new(config: &Config, sieve: &'a DescentSieve) -> Self {
-        let modulus = u128::from(sieve.modulus());
-        let direct_end = config.limit.min(modulus);
+impl Layout {
+    fn new(config: &Config) -> Self {
+        let mut depths = vec![config.sieve_k.min(INNER_SIEVE_K), config.sieve_k];
+        depths.dedup();
+        let direct_end = config.limit.min(1 << depths[0]);
         let direct_units = direct_end.div_ceil(DIRECT_CHUNK) as usize;
-        let sieved_units = config.limit.saturating_sub(modulus).div_ceil(modulus);
-        let sieved_units = usize::try_from(sieved_units).expect("limit too large for this sieve");
+        let mut total_units = direct_units;
+        let mut levels = Vec::new();
+        for (i, &k) in depths.iter().enumerate() {
+            let modulus = 1u128 << k;
+            // A depth-k sieve is valid from 2^k on, and hands over to the next level.
+            let end = depths
+                .get(i + 1)
+                .map_or(config.limit, |&next| config.limit.min(1 << next));
+            let units = end.saturating_sub(modulus).div_ceil(modulus);
+            let units = usize::try_from(units).expect("limit too large for this sieve");
+            let sieve = DescentSieve::new(k);
+            levels.push(Level {
+                modulus,
+                survivors_mod9: sieve.survivors().iter().map(|&r| (r % 9) as u8).collect(),
+                survivors: sieve.survivors().to_vec(),
+                first_block: 1,
+                units,
+            });
+            total_units += units;
+        }
         Layout {
             limit: config.limit,
             max_steps: config.max_steps,
-            modulus,
-            survivors: sieve.survivors(),
-            survivors_mod9: sieve.survivors().iter().map(|&r| (r % 9) as u8).collect(),
             direct_end,
             direct_units,
-            total_units: direct_units + sieved_units,
+            levels,
+            total_units,
         }
+    }
+
+    /// Calls `f` on every number in `unit` that has to be run, in increasing order.
+    #[inline]
+    fn for_each_candidate<E>(
+        &self,
+        mut unit: usize,
+        mut f: impl FnMut(u128) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if unit < self.direct_units {
+            let start = (unit as u128 * DIRECT_CHUNK).max(2);
+            let end = ((unit as u128 + 1) * DIRECT_CHUNK).min(self.direct_end);
+            return (start..end).try_for_each(f);
+        }
+        unit -= self.direct_units;
+        let level = self
+            .levels
+            .iter()
+            .find(|level| {
+                let here = unit < level.units;
+                if !here {
+                    unit -= level.units;
+                }
+                here
+            })
+            .expect("unit index in range");
+        let base = (level.first_block + unit as u128) * level.modulus;
+        let base_mod9 = (base % 9) as u8;
+        for (&r, &r_mod9) in level.survivors.iter().zip(&level.survivors_mod9) {
+            let n = base + u128::from(r);
+            if n >= self.limit {
+                break;
+            }
+            if MOD9_SKIP >> ((base_mod9 + r_mod9) % 9) & 1 == 0 {
+                f(n)?;
+            }
+        }
+        Ok(())
     }
 
     fn run_unit(&self, unit: usize) -> Result<UnitResult, VerifyError> {
         let mut result = UnitResult::default();
-        if unit < self.direct_units {
-            let start = (unit as u128 * DIRECT_CHUNK).max(2);
-            let end = ((unit as u128 + 1) * DIRECT_CHUNK).min(self.direct_end);
-            for n in start..end {
-                result.record(n, descent_steps(n, self.max_steps)?);
-            }
-        } else {
-            let base = (unit - self.direct_units + 1) as u128 * self.modulus;
-            let base_mod9 = (base % 9) as u8;
-            for (&r, &r_mod9) in self.survivors.iter().zip(&self.survivors_mod9) {
-                let n = base + u128::from(r);
-                if n >= self.limit {
-                    break;
-                }
-                if MOD9_SKIP >> ((base_mod9 + r_mod9) % 9) & 1 == 1 {
-                    continue;
-                }
-                result.record(n, descent_steps(n, self.max_steps)?);
-            }
-        }
+        self.for_each_candidate(unit, |n| {
+            result.record(n, descent_steps(n, self.max_steps)?);
+            Ok(())
+        })?;
         Ok(result)
     }
+}
+
+/// Every number a verification run with this limit and sieve depth actually
+/// follows, in increasing order. Everything else below the limit is covered
+/// by the sieves.
+pub fn candidates(limit: u128, sieve_k: u32) -> Vec<u128> {
+    let layout = Layout::new(&Config {
+        sieve_k,
+        ..Config::new(limit)
+    });
+    let mut out = Vec::new();
+    for unit in 0..layout.total_units {
+        let _ = layout.for_each_candidate(unit, |n| {
+            out.push(n);
+            Ok::<(), ()>(())
+        });
+    }
+    out
 }
 
 /// FNV-1a, 64-bit.
@@ -206,8 +281,7 @@ pub fn verify_with_progress(
     progress: impl Fn(usize, usize) + Sync,
 ) -> Result<Report, VerifyError> {
     let started = Instant::now();
-    let sieve = DescentSieve::new(config.sieve_k);
-    let layout = Layout::new(config, &sieve);
+    let layout = Layout::new(config);
     let threads = config.threads.max(1);
 
     let next_unit = AtomicUsize::new(0);
@@ -336,27 +410,37 @@ mod tests {
 
     #[test]
     fn tests_exactly_the_unsieved_numbers() {
-        let (limit, k) = (300_000u128, 10);
-        let sieve = DescentSieve::new(k);
-        let m = u128::from(sieve.modulus());
-        let mut tested = 0;
-        let mut steps = 0u128;
-        let mut longest = (0, 0);
-        for n in 2..limit {
-            if n >= m && (!sieve.contains(n) || crate::sieve::mod9_skippable(n)) {
-                continue;
+        // Depth 10 uses one sieve; depth 18 adds the inner 2^16 sieve below 2^18.
+        for (limit, k) in [(300_000u128, 10), (1_500_000, 18)] {
+            let inner = DescentSieve::new(k.min(INNER_SIEVE_K));
+            let outer = DescentSieve::new(k);
+            let mut tested = 0;
+            let mut steps = 0u128;
+            let mut longest = (0, 0);
+            for n in 2..limit {
+                let sieve = if n < u128::from(outer.modulus()) {
+                    &inner
+                } else {
+                    &outer
+                };
+                let sieved = n >= u128::from(sieve.modulus())
+                    && (!sieve.contains(n) || crate::sieve::mod9_skippable(n));
+                if sieved {
+                    continue;
+                }
+                let s = stopping_time(n).unwrap();
+                tested += 1;
+                steps += u128::from(s);
+                if s > longest.1 {
+                    longest = (n, s);
+                }
             }
-            let s = stopping_time(n).unwrap();
-            tested += 1;
-            steps += u128::from(s);
-            if s > longest.1 {
-                longest = (n, s);
-            }
+            let report = verify(&config(limit, k, 4)).unwrap();
+            assert_eq!(candidates(limit, k).len() as u64, tested, "k = {k}");
+            assert_eq!(report.tested, tested, "k = {k}");
+            assert_eq!(report.total_steps, steps, "k = {k}");
+            assert_eq!(report.longest, longest, "k = {k}");
         }
-        let report = verify(&config(limit, k, 4)).unwrap();
-        assert_eq!(report.tested, tested);
-        assert_eq!(report.total_steps, steps);
-        assert_eq!(report.longest, longest);
     }
 
     #[test]
