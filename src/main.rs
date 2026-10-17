@@ -42,6 +42,11 @@ COMMANDS
 
   bench [limit]      Compare the naive loop with each optimization  [2^26]
 
+  plot <chart>       Draw an SVG chart (to stdout, or a file with -o)
+      orbits [n...]    up to four orbits on a log scale    [27 703 6171 77671]
+      stopping [limit] steps to reach 1 for every n < limit [10000]
+      records [limit]  path records against the n^2 law     [2^32]
+
   help               Show this message
 
 Numbers may be written as expressions: 2^32, 1e9, 3*2^60+1, (2^64-1)^2.
@@ -62,6 +67,7 @@ fn main() {
         "cycles" => commands::cycles(rest),
         "patterns" => commands::patterns(rest),
         "bench" => commands::bench(rest),
+        "plot" => commands::plot(rest),
         "help" | "--help" | "-h" => {
             out!("{}", USAGE.trim_end());
             Ok(())

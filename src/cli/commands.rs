@@ -6,6 +6,7 @@ use std::time::Instant;
 use collatz::cycles::{census, cycles_with_period, GeneralizedMap};
 use collatz::map::Map;
 use collatz::orbit::{parity_vector, summarize, trajectory};
+use collatz::plot::{line_chart, scatter_chart, Axes, Scale, Series};
 use collatz::records::{delay_records, path_records};
 use collatz::sieve::DescentSieve;
 use collatz::verify::{naive_check_range, verify_with_progress, Config};
@@ -589,5 +590,155 @@ pub fn bench(argv: &[String]) -> CliResult {
         )
     );
     out!();
+    Ok(())
+}
+
+pub fn plot(argv: &[String]) -> CliResult {
+    let args = Args::parse(
+        argv,
+        &Spec {
+            values: &["output", "threads"],
+            switches: &[],
+        },
+    )?;
+    let kind = args.required(0, "a chart kind (orbits, stopping or records)")?;
+    let rest = &args.positional()[1..];
+    let svg = match kind {
+        "orbits" => {
+            let starts: Vec<BigUint> = if rest.is_empty() {
+                ["27", "703", "6171", "77671"]
+                    .iter()
+                    .map(|s| s.parse().unwrap())
+                    .collect()
+            } else {
+                rest.iter()
+                    .map(|s| expr::parse(s))
+                    .collect::<Result<_, _>>()?
+            };
+            if starts.iter().any(BigUint::is_zero) {
+                return Err(CliError::Usage("orbits start at 1".into()));
+            }
+            if starts.len() > collatz::plot::MAX_SERIES {
+                return Err(CliError::Usage(format!(
+                    "at most {} orbits fit on one chart",
+                    collatz::plot::MAX_SERIES
+                )));
+            }
+            let series: Vec<Series> = starts
+                .iter()
+                .map(|n| {
+                    let points: Vec<(f64, f64)> = trajectory(n, Map::Standard)
+                        .enumerate()
+                        .map(|(i, x)| (i as f64, x.log2()))
+                        .collect();
+                    let peak =
+                        points
+                            .iter()
+                            .copied()
+                            .fold((0.0, f64::MIN), |a, b| if b.1 > a.1 { b } else { a });
+                    let summary = summarize(n);
+                    Series {
+                        label: format!("{} ({} steps)", group(n), summary.standard_steps()),
+                        points,
+                        callout: Some((peak.0, peak.1, format!("peak {}", group(&summary.peak)))),
+                    }
+                })
+                .collect();
+            line_chart(
+                "Collatz orbits climb, then fall",
+                "Every value along each orbit under n → n/2 or 3n+1, on a log scale",
+                &Axes {
+                    x_label: "step".into(),
+                    y_label: "value".into(),
+                    x_scale: Scale::Linear,
+                    y_scale: Scale::Log2,
+                },
+                &series,
+            )
+        }
+        "stopping" => {
+            let max = rest.first().map_or(Ok(10_000), |s| expr::parse_u128(s))?;
+            let max = usize::try_from(max)
+                .ok()
+                .filter(|&m| (2..=1 << 20).contains(&m))
+                .ok_or_else(|| {
+                    CliError::Usage("keep the stopping-time limit between 2 and 2^20".into())
+                })?;
+            let table = collatz::records::total_stopping_times(max);
+            let points: Vec<(f64, f64)> = table
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(n, &steps)| (n as f64, f64::from(steps)))
+                .collect();
+            let (n, steps) = table
+                .iter()
+                .enumerate()
+                .max_by_key(|&(n, &s)| (s, std::cmp::Reverse(n)))
+                .unwrap();
+            scatter_chart(
+                &format!("Steps to reach 1, for every n < {}", group(max)),
+                "Total stopping time under the standard map; the bands come from merging orbits",
+                &Axes {
+                    x_label: "n".into(),
+                    y_label: "steps".into(),
+                    x_scale: Scale::Linear,
+                    y_scale: Scale::Linear,
+                },
+                &points,
+                None,
+                &[(
+                    n as f64,
+                    f64::from(*steps),
+                    format!("{} takes {steps} steps", group(n)),
+                )],
+            )
+        }
+        "records" => {
+            let max = rest.first().map_or(Ok(1 << 32), |s| expr::parse_u128(s))?;
+            let threads = args.get("threads", default_threads())?;
+            let records = path_records(max, 24, threads);
+            let points: Vec<(f64, f64)> = records
+                .iter()
+                .filter(|r| r.n > 1)
+                .map(|r| ((r.n as f64).log2(), r.peak.log2()))
+                .collect();
+            let last = records
+                .last()
+                .ok_or_else(|| CliError::Usage("limit too small".into()))?;
+            scatter_chart(
+                &format!(
+                    "Path records below {}",
+                    limit(max).split(' ').next().unwrap_or("")
+                ),
+                "Each dot is an n whose orbit climbs higher than every smaller start's",
+                &Axes {
+                    x_label: "n".into(),
+                    y_label: "peak of the orbit".into(),
+                    x_scale: Scale::Log2,
+                    y_scale: Scale::Log2,
+                },
+                &points,
+                Some((2.0, "peak = n²")),
+                &[(
+                    (last.n as f64).log2(),
+                    last.peak.log2(),
+                    format!("{} peaks at {}", group(last.n), abbreviate(&last.peak, 24)),
+                )],
+            )
+        }
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown chart '{other}' (expected orbits, stopping or records)"
+            )))
+        }
+    };
+    match args.value("output") {
+        Some(path) => {
+            std::fs::write(path, svg).map_err(|e| CliError::Failure(format!("{path}: {e}")))?;
+            eprintln!("  wrote {path}");
+        }
+        None => out!("{}", svg.trim_end()),
+    }
     Ok(())
 }

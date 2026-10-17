@@ -19,6 +19,7 @@ pub mod expr;
 pub mod map;
 pub mod orbit;
 pub mod par;
+pub mod plot;
 pub mod records;
 pub mod sieve;
 pub mod verify;
