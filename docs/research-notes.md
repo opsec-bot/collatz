@@ -111,7 +111,7 @@ n \;=\; \frac{\sum_{i=0}^{k-1} 3^{\,k-1-i}\, 2^{\,a_i}}{2^{L} - 3^{k}}, \qquad 0
 
 - Almost all n eventually drop below n (Terras 1976).
 - Almost all n reach a value below f(n) for any f that tends to infinity, e.g. log log log log n ([Tao 2019](https://arxiv.org/abs/1909.03562v2)). Logarithmic density, so exceptions are not excluded.
-- At least x^0.84 of the numbers up to x provably reach 1 (Krasikov–Lagarias, from memory). A Dec 2025 preprint claims x^0.946 ([Liu](https://arxiv.org/abs/2512.13760v1)); it is filed under general math and not yet peer-reviewed.
+- At least x^0.84 of the numbers up to x provably reach 1 ([Krasikov–Lagarias 2003](https://arxiv.org/abs/math/0205002), Acta Arithmetica); this is still the peer-reviewed record. Unrefereed 2026 computations with the same linear-programming method report more: x^0.90 at level 18 with a Lean proof (Mazur), and x^0.9251 at level 22, Lean-checked up to x^0.914 ([kollatz](https://github.com/dpalmqvist/kollatz)). A Dec 2025 preprint by Liu first claimed x^0.946, but its [second version](https://arxiv.org/abs/2512.13760) lowered the claim to x^0.3227.
 
 **Heuristic, not proven**
 
@@ -186,8 +186,10 @@ Build a correct slow checker first, then make it fast, then point it at somethin
 - [Angeltveit, collatz code (Rust, CUDA, OpenCL)](https://github.com/vigleik0/collatz)
 - [Hercher, There are no Collatz m-Cycles with m ≤ 91 (arXiv)](https://arxiv.org/abs/2201.00406v3)
 - [Tao, Almost all orbits of the Collatz map attain almost bounded values (arXiv)](https://arxiv.org/abs/1909.03562v2)
-- [Liu, Counting the Collatz numbers (arXiv preprint, Dec 2025)](https://arxiv.org/abs/2512.13760v1)
+- [Liu, Counting Collatz Numbers (arXiv preprint, Dec 2025; v2 claims x^0.3227)](https://arxiv.org/abs/2512.13760)
+- [Krasikov & Lagarias, Bounds for the 3x+1 Problem using Difference Inequalities (Acta Arith. 2003)](https://arxiv.org/abs/math/0205002)
+- [dpalmqvist/kollatz: Krasikov–Lagarias bounds to level 22 with certificates and Lean checks](https://github.com/dpalmqvist/kollatz)
 - [Elsenhans, Numerical verification for billion digit random numbers (arXiv, 2025)](https://arxiv.org/abs/2502.16743v1)
 - [Gigazine, AI-assisted Collatz "disproof" exploited a Lean kernel bug (Aug 2026)](https://gigazine.net/gsc_news/en/20260803-collatz-lean-kernel-bug)
 
-Items marked "from memory" (Krasikov–Lagarias 0.84, negative-number cycles) are standard results but were not re-checked against a source page here.
+The item marked "from memory" (negative-number cycles) is a standard result; the three cycles are also confirmed by this repository's `cycles` and `patterns` commands and by the 3n−1 verification below 2^40 in [3n-minus-1-basins.md](3n-minus-1-basins.md).
