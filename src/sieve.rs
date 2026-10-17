@@ -30,11 +30,31 @@
 //! shortcut step is `n`. If `n ≡ 4 (mod 9)` then `(8n - 5) / 9` is a smaller
 //! number that reaches `n` in three steps. Either way the orbit of `n` is the
 //! tail of a smaller orbit, so `n ≡ 2, 4, 5, 8 (mod 9)` can be skipped too.
+//!
+//! # The mirror map 3n-1
+//!
+//! Everything above carries over to `3n-1` ([`Variant::Minus`]): the linear
+//! formula holds with the same slope, so the descent test is unchanged apart
+//! from the odd step. The mod 9 rules become: `n ≡ 1 (mod 3)` is one step
+//! after `(2n + 1) / 3`, and `n ≡ 5 (mod 9)` is three steps after
+//! `(8n + 5) / 9`. Both are smaller than `n` once `n >= 14`, so
+//! `n ≡ 1, 4, 5, 7 (mod 9)` can be skipped.
 
-use crate::map::POW3;
+use crate::map::{Variant, POW3};
 
-/// Bit `i` is set when residues `i mod 9` can be skipped: 2, 4, 5 and 8.
+/// Bit `i` is set when residues `i mod 9` can be skipped under `3n+1`: 2, 4, 5 and 8.
 pub const MOD9_SKIP: u16 = 1 << 2 | 1 << 4 | 1 << 5 | 1 << 8;
+
+/// Bit `i` is set when residues `i mod 9` can be skipped under `3n-1`: 1, 4, 5 and 7.
+pub const MOD9_SKIP_MINUS: u16 = 1 << 1 | 1 << 4 | 1 << 5 | 1 << 7;
+
+/// The mod 9 skip mask for one sign of the map.
+pub fn mod9_skip_mask(variant: Variant) -> u16 {
+    match variant {
+        Variant::Plus => MOD9_SKIP,
+        Variant::Minus => MOD9_SKIP_MINUS,
+    }
+}
 
 /// Whether `n` is reached from a smaller starting value, so it can be skipped.
 ///
@@ -61,6 +81,11 @@ pub enum Descent {
 ///
 /// Panics if `k > 48` or `r >= 2^k`.
 pub fn descent_test(r: u64, k: u32) -> Descent {
+    descent_test_variant(Variant::Plus, r, k)
+}
+
+/// [`descent_test`] for either sign of the map.
+pub fn descent_test_variant(variant: Variant, r: u64, k: u32) -> Descent {
     assert!(k <= 48, "sieve depth is limited to 48 bits");
     assert!(u128::from(r) < 1u128 << k, "residue out of range");
     let modulus = 1u128 << k;
@@ -72,7 +97,8 @@ pub fn descent_test(r: u64, k: u32) -> Descent {
 
     for j in 1..=k {
         if value & 1 == 1 {
-            value += value / 2 + 1;
+            // (3v + 1)/2 or (3v - 1)/2 for odd v.
+            value += value / 2 + u128::from(variant == Variant::Plus);
             odd += 1;
         } else {
             value /= 2;
@@ -95,6 +121,7 @@ pub fn descent_test(r: u64, k: u32) -> Descent {
 #[derive(Debug, Clone)]
 pub struct DescentSieve {
     k: u32,
+    variant: Variant,
     survivors: Vec<u64>,
     growth: u128,
 }
@@ -109,18 +136,25 @@ impl DescentSieve {
     ///
     /// Panics if `k > MAX_K`.
     pub fn new(k: u32) -> Self {
-        Self::build(k, |_, _| {})
+        Self::build(Variant::Plus, k, |_, _| {})
+    }
+
+    /// Builds the sieve for either sign of the map.
+    pub fn with_variant(variant: Variant, k: u32) -> Self {
+        Self::build(variant, k, |_, _| {})
     }
 
     /// Builds sieves for every depth up to `k`, returning the survivor count
     /// at each depth (index 0 is depth 0, where everything survives).
     pub fn survivor_counts(k: u32) -> Vec<u64> {
         let mut counts = vec![1];
-        Self::build(k, |_, survivors| counts.push(survivors.len() as u64));
+        Self::build(Variant::Plus, k, |_, survivors| {
+            counts.push(survivors.len() as u64)
+        });
         counts
     }
 
-    fn build(k: u32, mut on_level: impl FnMut(u32, &[u64])) -> Self {
+    fn build(variant: Variant, k: u32, mut on_level: impl FnMut(u32, &[u64])) -> Self {
         assert!(
             k <= Self::MAX_K,
             "sieve depth must be at most {}",
@@ -133,7 +167,7 @@ impl DescentSieve {
             let mut next = Vec::with_capacity(survivors.len() * 2);
             for &r in &survivors {
                 for child in [r, r + half] {
-                    match descent_test(child, level) {
+                    match descent_test_variant(variant, child, level) {
                         Descent::Survives => next.push(child),
                         Descent::Proven { growth: g, .. } => growth = growth.max(g),
                     }
@@ -145,9 +179,20 @@ impl DescentSieve {
         }
         DescentSieve {
             k,
+            variant,
             survivors,
             growth,
         }
+    }
+
+    /// Which sign of the map the sieve was built for.
+    pub fn variant(&self) -> Variant {
+        self.variant
+    }
+
+    /// The matching mod 9 skip mask.
+    pub fn mod9_mask(&self) -> u16 {
+        mod9_skip_mask(self.variant)
     }
 
     /// The sieve depth `k`.
@@ -239,6 +284,47 @@ mod tests {
                 // The standard-map peak is at most twice the shortcut-map peak.
                 assert!(run.peak <= 2 * sieve.growth() * n, "n = {n}");
             }
+        }
+    }
+
+    #[test]
+    fn minus_sieve_is_sound() {
+        let k = 12;
+        let sieve = DescentSieve::with_variant(Variant::Minus, k);
+        let m = u128::from(sieve.modulus());
+        let mut sieved = 0;
+        for n in m..m * 32 {
+            if !sieve.contains(n) {
+                let run =
+                    crate::orbit::run_variant_until_below(Variant::Minus, n, n, u64::MAX).unwrap();
+                assert!(run.steps <= u64::from(k), "n = {n}");
+                assert!(run.peak <= 2 * sieve.growth() * n, "n = {n}");
+                sieved += 1;
+            }
+        }
+        assert!(sieved > 0);
+        // The two signs prune differently.
+        assert_ne!(sieve.survivors(), DescentSieve::new(k).survivors());
+    }
+
+    #[test]
+    fn minus_mod9_sieve() {
+        let step = |x: u128| Variant::Minus.shortcut(x).unwrap();
+        for n in 14..10_000u128 {
+            if MOD9_SKIP_MINUS >> (n % 9) & 1 == 0 {
+                continue;
+            }
+            let smaller = if n % 3 == 1 {
+                (2 * n + 1) / 3
+            } else {
+                (8 * n + 5) / 9
+            };
+            assert!(smaller < n);
+            let reached = (0..3).scan(smaller, |x, _| {
+                *x = step(*x);
+                Some(*x)
+            });
+            assert!(reached.into_iter().any(|x| x == n), "n = {n}");
         }
     }
 

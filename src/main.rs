@@ -23,6 +23,7 @@ COMMANDS
       -t, --threads    worker threads                             [all cores]
       -k, --sieve      descent sieve depth                        [24]
       --max-steps      report orbits that take longer than this   [2^20]
+      --minus          verify the mirror map 3n-1 instead
 
   records <limit>    Path records: orbits that climb higher than all before
       -t, --threads, -k, --sieve

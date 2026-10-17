@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
 use collatz::cycles::{census, cycles_with_period, GeneralizedMap};
-use collatz::map::Map;
+use collatz::map::{Map, Variant};
 use collatz::orbit::{parity_vector, summarize, trajectory};
 use collatz::plot::{line_chart, scatter_chart, Axes, Scale, Series};
 use collatz::records::{delay_records, path_records};
@@ -163,7 +163,7 @@ pub fn verify(argv: &[String]) -> CliResult {
         argv,
         &Spec {
             values: &["threads", "sieve", "max-steps"],
-            switches: &[],
+            switches: &["minus"],
         },
     )?;
     args.no_extra_positional(1)?;
@@ -171,11 +171,18 @@ pub fn verify(argv: &[String]) -> CliResult {
     config.threads = args.get("threads", config.threads)?;
     config.sieve_k = parse_sieve(&args, config.sieve_k)?;
     config.max_steps = args.get("max-steps", config.max_steps)?;
+    if args.switch("minus") {
+        config.variant = Variant::Minus;
+        if config.sieve_k < 4 {
+            return Err(CliError::Usage("--minus needs --sieve 4 or more".into()));
+        }
+    }
 
     out!();
     out!(
-        "  Verifying every n < {} on {} threads with a 2^{} sieve",
+        "  Verifying every n < {} under {} on {} threads with a 2^{} sieve",
         limit(config.limit),
+        config.variant,
         config.threads,
         config.sieve_k
     );
@@ -183,7 +190,14 @@ pub fn verify(argv: &[String]) -> CliResult {
     let report = verify_with_progress(&config, progress_bar("verifying"))
         .map_err(|e| CliError::Failure(e.to_string()))?;
 
-    out!("  ✓ every n < {} reaches 1", group(report.limit));
+    let destination = match config.variant {
+        Variant::Plus => "1",
+        Variant::Minus => "one of the cycles through 1, 5 and 17",
+    };
+    out!(
+        "  ✓ every n < {} reaches {destination}",
+        group(report.limit)
+    );
     out!();
     let rows = [
         (

@@ -18,12 +18,18 @@
 //! counter. Every unit produces a small summary that is folded into a
 //! checksum in unit order, so the checksum depends on the limit and the sieve
 //! depth but not on the number of threads.
+//!
+//! The same machinery verifies the mirror map `3n-1` ([`Variant::Minus`]),
+//! whose conjecture is that every positive integer reaches one of three
+//! cycles, with minima 1, 5 and 17. A cycle minimum never drops below
+//! itself, so 5 and 17 count as settled; every other number must descend.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::orbit::{run_until_below, run_until_below_big, RunError};
-use crate::sieve::{DescentSieve, MOD9_SKIP};
+use crate::map::Variant;
+use crate::orbit::{run_variant_until_below, run_variant_until_below_big, RunError};
+use crate::sieve::DescentSieve;
 
 /// Numbers per unit in the directly checked region.
 const DIRECT_CHUNK: u128 = 1 << 16;
@@ -43,6 +49,8 @@ pub struct Config {
     pub threads: usize,
     /// Give up on (and report) any orbit that has not descended after this many steps.
     pub max_steps: u64,
+    /// Which sign of the map to verify.
+    pub variant: Variant,
 }
 
 impl Config {
@@ -53,6 +61,7 @@ impl Config {
             sieve_k: 24,
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             max_steps: 1 << 20,
+            variant: Variant::Plus,
         }
     }
 }
@@ -129,13 +138,19 @@ impl UnitResult {
 /// Shortcut steps until `n` drops below itself, falling back to exact
 /// arithmetic on overflow.
 #[inline]
-fn descent_steps(n: u128, max_steps: u64) -> Result<u64, VerifyError> {
+fn descent_steps(variant: Variant, n: u128, max_steps: u64) -> Result<u64, VerifyError> {
+    if variant == Variant::Minus && (n == 5 || n == 17) {
+        // Minima of the two extra 3n-1 cycles: they are their own destination.
+        return Ok(0);
+    }
     let limit_hit = VerifyError::StepLimit { n, max_steps };
-    match run_until_below(n, n, max_steps) {
+    match run_variant_until_below(variant, n, n, max_steps) {
         Ok(run) => Ok(run.steps),
-        Err(RunError::Overflow) => run_until_below_big(&n.into(), &n.into(), max_steps)
-            .map(|run| run.steps)
-            .map_err(|_| limit_hit),
+        Err(RunError::Overflow) => {
+            run_variant_until_below_big(variant, &n.into(), &n.into(), max_steps)
+                .map(|run| run.steps)
+                .map_err(|_| limit_hit)
+        }
         Err(RunError::StepLimit) => Err(limit_hit),
     }
 }
@@ -155,6 +170,8 @@ struct Level {
 struct Layout {
     limit: u128,
     max_steps: u64,
+    variant: Variant,
+    mod9_mask: u16,
     direct_end: u128,
     direct_units: usize,
     levels: Vec<Level>,
@@ -163,6 +180,11 @@ struct Layout {
 
 impl Layout {
     fn new(config: &Config) -> Self {
+        // The 3n-1 mod 9 rule needs n >= 14, so its sieved region must start at 16 or above.
+        assert!(
+            config.variant == Variant::Plus || config.sieve_k >= 4,
+            "verifying 3n-1 needs a sieve depth of at least 4"
+        );
         let mut depths = vec![config.sieve_k.min(INNER_SIEVE_K), config.sieve_k];
         depths.dedup();
         let direct_end = config.limit.min(1 << depths[0]);
@@ -177,7 +199,7 @@ impl Layout {
                 .map_or(config.limit, |&next| config.limit.min(1 << next));
             let units = end.saturating_sub(modulus).div_ceil(modulus);
             let units = usize::try_from(units).expect("limit too large for this sieve");
-            let sieve = DescentSieve::new(k);
+            let sieve = DescentSieve::with_variant(config.variant, k);
             levels.push(Level {
                 modulus,
                 survivors_mod9: sieve.survivors().iter().map(|&r| (r % 9) as u8).collect(),
@@ -190,6 +212,8 @@ impl Layout {
         Layout {
             limit: config.limit,
             max_steps: config.max_steps,
+            variant: config.variant,
+            mod9_mask: crate::sieve::mod9_skip_mask(config.variant),
             direct_end,
             direct_units,
             levels,
@@ -228,7 +252,7 @@ impl Layout {
             if n >= self.limit {
                 break;
             }
-            if MOD9_SKIP >> ((base_mod9 + r_mod9) % 9) & 1 == 0 {
+            if self.mod9_mask >> ((base_mod9 + r_mod9) % 9) & 1 == 0 {
                 f(n)?;
             }
         }
@@ -238,7 +262,7 @@ impl Layout {
     fn run_unit(&self, unit: usize) -> Result<UnitResult, VerifyError> {
         let mut result = UnitResult::default();
         self.for_each_candidate(unit, |n| {
-            result.record(n, descent_steps(n, self.max_steps)?);
+            result.record(n, descent_steps(self.variant, n, self.max_steps)?);
             Ok(())
         })?;
         Ok(result)
@@ -385,6 +409,7 @@ mod tests {
             sieve_k,
             threads,
             max_steps: 1 << 20,
+            variant: Variant::Plus,
         }
     }
 
@@ -454,8 +479,42 @@ mod tests {
     fn overflowing_orbits_use_the_exact_engine() {
         // 2^127 - 1 climbs far past u128 before it comes back down.
         let n = u128::MAX >> 1;
-        let exact = run_until_below_big(&n.into(), &n.into(), u64::MAX).unwrap();
-        assert_eq!(descent_steps(n, u64::MAX), Ok(exact.steps));
+        let exact = crate::orbit::run_until_below_big(&n.into(), &n.into(), u64::MAX).unwrap();
+        assert_eq!(descent_steps(Variant::Plus, n, u64::MAX), Ok(exact.steps));
+    }
+
+    #[test]
+    fn minus_variant_tests_exactly_the_unsieved_numbers() {
+        let (limit, k) = (1_500_000u128, 18);
+        let inner = DescentSieve::with_variant(Variant::Minus, k.min(INNER_SIEVE_K));
+        let outer = DescentSieve::with_variant(Variant::Minus, k);
+        let skip = crate::sieve::MOD9_SKIP_MINUS;
+        let (mut tested, mut steps) = (0u64, 0u128);
+        for n in 2..limit {
+            let sieve = if n < u128::from(outer.modulus()) {
+                &inner
+            } else {
+                &outer
+            };
+            if n >= u128::from(sieve.modulus()) && (!sieve.contains(n) || skip >> (n % 9) & 1 == 1)
+            {
+                continue;
+            }
+            tested += 1;
+            if n != 5 && n != 17 {
+                let run = run_variant_until_below(Variant::Minus, n, n, u64::MAX).unwrap();
+                steps += u128::from(run.steps);
+            }
+        }
+        let mut cfg = config(limit, k, 4);
+        cfg.variant = Variant::Minus;
+        let report = verify(&cfg).unwrap();
+        assert_eq!((report.tested, report.total_steps), (tested, steps));
+        // The checksum tells the two maps apart.
+        assert_ne!(
+            report.checksum,
+            verify(&config(limit, k, 4)).unwrap().checksum
+        );
     }
 
     #[test]
