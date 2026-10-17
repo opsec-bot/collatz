@@ -16,5 +16,6 @@
 pub mod bigint;
 pub mod map;
 pub mod orbit;
+pub mod sieve;
 
 pub use bigint::BigUint;
