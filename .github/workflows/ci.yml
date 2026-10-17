@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release
+      - run: cargo test --release -- --include-ignored
       - name: Verify every n below 2^32
         run: cargo run --release -- verify 2^32
 
