@@ -14,6 +14,7 @@
 //! is about checking it quickly and correctly, and about looking at the data.
 
 pub mod bigint;
+pub mod cycles;
 pub mod map;
 pub mod orbit;
 pub mod par;
