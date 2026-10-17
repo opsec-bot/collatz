@@ -16,6 +16,8 @@
 pub mod bigint;
 pub mod map;
 pub mod orbit;
+pub mod par;
+pub mod records;
 pub mod sieve;
 pub mod verify;
 
