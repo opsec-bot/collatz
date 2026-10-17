@@ -921,10 +921,12 @@ pub fn basins(argv: &[String]) -> CliResult {
                     .iter()
                     .map(|(k, t)| (f64::from(*k), 100.0 * t.fraction(b)))
                     .collect();
-                let last = *points.last().unwrap_or(&(0.0, 0.0));
+                // The lines end close together, so the final share goes in the
+                // legend rather than in labels that would collide.
+                let last = points.last().map_or(0.0, |p| p.1);
                 Series {
-                    label: format!("ends in the {} cycle", b.minimum()),
-                    callout: Some((last.0, last.1, format!("{:.2}%", last.1))),
+                    label: format!("ends in the {} cycle: {last:.2}%", b.minimum()),
+                    callout: None,
                     points,
                 }
             })
