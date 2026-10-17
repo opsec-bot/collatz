@@ -1,0 +1,17 @@
+[package]
+name = "collatz"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A fast, dependency-free verifier and explorer for the Collatz (3n+1) conjecture"
+license = "MIT"
+repository = "https://github.com/opsec-bot/collatz"
+readme = "README.md"
+keywords = ["collatz", "mathematics", "number-theory", "verification"]
+categories = ["mathematics", "command-line-utilities"]
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
